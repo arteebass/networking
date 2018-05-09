@@ -3,4 +3,39 @@
            Name(s): Rueben Tiow, Hunter Garret, Jacob Johnson
 ================================================
 
-DESCRIBE YOUR CODE AND DESIGN DECISIONS HERE
+USAGE:
+1. Run server with ./server
+2. Server can be quit by signaling CTRL+C
+3. Run client with [-q] [-f <filename>] server:port
+
+OVERVIEW:
+This project implements a "Simple" Transport Control Protocol (STCP) which is a stripped
+down version of TCP. 
+
+IMPLEMENTATION DESIGN DECISION:
+1. Connection state enumerations were defined and used on an "as needed" basis.
+2. Based on need, our context_t manages these resources:
+  - connection state
+  - sequence number
+  - received sequence number
+  - receiver window size
+  - receiver buffer
+  - sender buffer
+3. Three-way handshaking mimics that of traditional TCP
+4. After a connection is established, on three events are handled:
+  - Application data
+  - Network data
+  - Application close request
+
+IMPLEMENTED:															
+1. Sliding Window(s)
+  - Fixed size: 3072 bytes
+  - A receive window
+  - A sender window = min(receive window, congestion window)
+2. TCP segment send/receive
+3. Connection Setup/Teardown
+
+LIMITATIONS:
+1. Congestion Control not implemented for simplicity.
+2. Since a reliable network layer is assumed, timeouts, packet loss, and
+reordering of packets is not supported.
