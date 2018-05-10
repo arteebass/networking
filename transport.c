@@ -54,6 +54,9 @@ typedef struct
 static void generate_initial_seq_num(context_t *ctx);
 static void control_loop(mysocket_t sd, context_t *ctx);
 // funtions used
+bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags);
+bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags);
+
 bool send_syn(mysocket_t sd, context_t *ctx);
 bool get_syn_ack(myscket_t sd, context_t *ctx);
 bool send_ack(mysocket_t sd, context_t *ctx);
@@ -85,27 +88,33 @@ void transport_init(mysocket_t sd, bool_t is_active)
 
     if(is_active) {
         // send SYN packet
-        if(!send_syn(sd, ctx))
+        if(!send_packet(sd, ctx, TH_SYN))
             return; // unable to send so exit out
+        ctx->connection_state = SENT_SYN;
 
         // then we need to wait for the ack
-        if(!get_syn_ack(sd, ctx))
-            return; // did not get syn ack
+        if(!get_packet(sd, ctx, (TH_SYN | TH_ACK)))
+            return; // did not get syn ack        
+        ctx->connection_state = RECV_SYN_ACK;
 
         // finally ack the syn ack
-        if(!send_ack(sd, ctx))
+        if(!send_packet(sd, ctx, TH_ACK))
             return;
+        ctx->connection_state = SENT_ACK;
 
     } else {
         // wait for SYN packet
-        if(!get_syn(sd, ctx))
+        if(!get_packet(sd, ctx, TH_SYN))
             return;
+        ctx->connection_state = RECV_SYN;
 
-        if(!send_syn_ack(sd, ctx))
+        if(!send_packet(sd, ctx, (TH_SYN | TH_ACK)))
             return;
+        ctx->connection_state = SENT_SYN_ACK;
 
-        if(!get_ack(sd, ctx))
+        if(!get_packet(sd, ctx, TH_ACK))
             return;
+        ctx->connection_state = RECV_ACK;
     }
 
     ctx->connection_state = CSTATE_ESTABLISHED;
@@ -117,154 +126,18 @@ void transport_init(mysocket_t sd, bool_t is_active)
     free(ctx);
 }
 
-// send a syn packet to establish a tcp connection
-bool send_syn(mysocket_t sd, context_t *ctx) {
-    // create the packet
-    STCPHeader* packet = (STPCHeader*) malloc(sizeof(STCPHeader));
-    packet->th_seq = htonl(ctx->seq_num);
-    packet->th_ack = 0;
-    packet->th_flags = TH_SYN;
-    packet->th_win = htons(WINDOW_SIZE);
-    packet->th_off = htonl(5); // not using optional field
-
-    // increment seq number
-    ctx->seq_num++;
-
-    // send the packet
-    
-    if((ssize_t bytes = stcp_network_send(sd, packet, sizeof(STCPHeader), NULL)) > 0) {
-        // then it sent sucessfully
-        ctx->connection_state = SENT_SYN;
-        // free the memory
-        free(packet);
-        return true;
-    } else {
-        // there was an error sending
-        errno = ECONNREFUSED;
-        // free memory
-        free(packet);
-        free(ctx);
-        return false;
-    }    
-}
-
-// funtion to wait for the syn ack
-bool get_syn_ack(myscket_t sd, context_t *ctx) {
-    // create the buffer to receive header
-    char buffer[sizeof(STCPHeader)];
-
-    // wait for an event in our socket
-    stcp_wait_for_event(sd, NETWORK_DATA, NULL);
-    // then recv the bytes
-    if((ssize_t bytes_recvd = stcp_network_recv(sd, buffer, MSS)) < sizeof(STCPHeader)) {
-        // we did not recieve all the bytes that we should have gotten
-        errno = ECONNREFUSED;
-        // free memory we dont need anymore
-        free(ctx);
-        return false;
-    }
-
-    // get packet info from buffer
-    STCPHeader *packet = (STCPHeader*)buffer;
-
-    // make sure it is a syn-ack packet
-    if(packet->th_flags != (TH_ACK & TH_SYN)){
-        // we did not recieve the right flags
-        errno = ECONNREFUSED;
-        // free memory we dont need anymore
-        free(ctx);
-        return false;
-    }
-
-    // get the rec window size and seq num from receiver
-    ctx->rec_wind_size = ntohs(packet->th_win);
-    if(ctx->rec_wind_size == 0)
-        ctx->rec_wind_size = 1; // for flow control - if 0 try sending 1 byte
-
-    ctx->rec_seq_num = ntohl(packet->th_seq);
-
-    // set state
-    ctx->connection_state = RECV_SYN_ACK;
-}
-
-// sends an ack
-bool send_ack(mysocket_t sd, context_t *ctx) {
-    // create the packet
-    STCPHeader* packet = (STPCHeader*) malloc(sizeof(STCPHeader));
-    packet->th_seq = 0;
-    packet->th_ack = htonl(ctx->re_seq_num + 1);
-    packet->th_flags = TH_ACK;
-    packet->th_win = htons(WINDOW_SIZE);
-    packet->th_off = htonl(5); // not using optional field
-
-    if((ssize_t bytes = stcp_network_send(sd, packet, sizeof(STCPHeader), NULL)) > 0) {
-        // then it sent sucessfully
-        ctx->connection_state = SENT_ACK;
-        // free the memory
-        free(packet);
-        return true;
-    } else {
-        // there was an error sending
-        errno = ECONNREFUSED;
-        // free memory
-        free(packet);
-        free(ctx);
-        return false;
-    }    
-}
-
-// get the syn packet to initiate tcp connection
-bool get_syn(myscket_t sd, context_t *ctx) {
-    // create the buffer to receive header
-    char buffer[sizeof(STCPHeader)];
-
-    // wait for an event in our socket
-    stcp_wait_for_event(sd, NETWORK_DATA, NULL);
-    // then recv the bytes
-    if((ssize_t bytes_recvd = stcp_network_recv(sd, buffer, MSS)) < sizeof(STCPHeader)) {
-        // we did not recieve all the bytes that we should have gotten
-        errno = ECONNREFUSED;
-        // free memory we dont need anymore
-        free(ctx);
-        return false;
-    }
-
-    // get packet info from buffer
-    STCPHeader *packet = (STCPHeader*)buffer;
-
-    // make sure it is a syn-ack packet
-    if(packet->th_flags != (TH_SYN)) {
-        // we did not recieve the right flags
-        errno = ECONNREFUSED;
-        // free memory we dont need anymore
-        free(ctx);
-        return false;
-    }
-
-    // get the rec window size and seq num from receiver
-    ctx->rec_wind_size = ntohs(packet->th_win);
-    if(ctx->rec_wind_size == 0)
-        ctx->rec_wind_size = 1; // for flow control - if 0 try sending 1 byte
-
-    ctx->rec_seq_num = ntohl(packet->th_seq);
-
-    // set state
-    ctx->connection_state = RECV_SYN;
-}
-
-// sends a syn ack
-bool send_syn_ack(mysocket_t sd, context_t *ctx) {
+// send a packet
+bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
     // create the packet
     STCPHeader* packet = (STPCHeader*) malloc(sizeof(STCPHeader));
     packet->th_seq = htonl(ctx->seq_num++);
-    packet->th_ack = htonl(ctx->re_seq_num + 1);
-    packet->th_flags = (TH_SYN | TH_ACK);
+    packet->th_ack = htonl(ctx->rec_seq_num+1);
+    packet->th_flags = flags;
     packet->th_win = htons(WINDOW_SIZE);
     packet->th_off = htonl(5); // not using optional field
 
+    // send the packet    
     if((ssize_t bytes = stcp_network_send(sd, packet, sizeof(STCPHeader), NULL)) > 0) {
-        // then it sent sucessfully
-        ctx->connection_state = SENT_SYN_ACK;
         // free the memory
         free(packet);
         return true;
@@ -278,8 +151,8 @@ bool send_syn_ack(mysocket_t sd, context_t *ctx) {
     }    
 }
 
-// get the syn packet to initiate tcp connection
-bool get_ack(myscket_t sd, context_t *ctx) {
+// funtion to wait for a packet
+bool get_packet(myscket_t sd, context_t *ctx, uint8_t flags) {
     // create the buffer to receive header
     char buffer[sizeof(STCPHeader)];
 
@@ -298,7 +171,7 @@ bool get_ack(myscket_t sd, context_t *ctx) {
     STCPHeader *packet = (STCPHeader*)buffer;
 
     // make sure it is a syn-ack packet
-    if(packet->th_flags != (TH_ACK)) {
+    if(packet->th_flags != flags) {
         // we did not recieve the right flags
         errno = ECONNREFUSED;
         // free memory we dont need anymore
@@ -312,19 +185,13 @@ bool get_ack(myscket_t sd, context_t *ctx) {
         ctx->rec_wind_size = 1; // for flow control - if 0 try sending 1 byte
 
     ctx->rec_seq_num = ntohl(packet->th_seq);
-
-    // set state
-    if(ctx->connection_state == SENT_FIN)
-        ctx->connection_state = CLOSED;
-    else
-        ctx->connection_state = RECV_ACK;
-    
 }
 
 /* generate random initial sequence number for an STCP connection */
 static void generate_initial_seq_num(context_t *ctx)
 {
     assert(ctx);
+    ctx->rec_seq_num = 0;
 
 #ifdef FIXED_INITNUM
     /* please don't change this! */
