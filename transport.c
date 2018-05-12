@@ -19,7 +19,7 @@
 #include "mysock.h"
 #include "stcp_api.h"
 #include "transport.h"
-#include "time.h"
+#include <sys/time.h>
 
 // globals
 static const unsigned int WINDOW_SIZE = 3072;
@@ -84,16 +84,11 @@ static void control_loop(mysocket_t sd, context_t *ctx);
 // added funtions used
 bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize_t length);
 bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags);
-bool send_syn(mysocket_t sd, context_t *ctx);
-bool get_syn_ack(mysocket_t sd, context_t *ctx);
-bool send_ack(mysocket_t sd, context_t *ctx);
-bool get_syn(mysocket_t sd, context_t *ctx);
-bool send_syn_ack(mysocket_t sd, context_t *ctx);
 bool get_ack(mysocket_t sd, context_t *ctx);
 bool send_fin(mysocket_t sd, context_t* ctx);
-void app_close_event(mysocket_t, sd, context_t* ctx);
+void app_close_event(mysocket_t sd, context_t* ctx);
 void network_data_event(mysocket_t sd, context_t* ctx);
-bool app_data_event(mysocket_t sd, context_t ctx);
+bool app_data_event(mysocket_t sd, context_t *ctx);
 
 
 /* initialise the transport layer, and start the main loop, handling
@@ -160,7 +155,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
 // send a packet
 bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize_t length) {
     // create the packet
-    STCPHeader* packet = (STPCHeader*) malloc(sizeof(STCPHeader) + length);
+    STCPHeader* packet = (STCPHeader*) malloc(sizeof(STCPHeader) + length);
     packet->th_seq = htonl(ctx->seq_num++);
     packet->th_ack = htonl(ctx->rec_seq_num+1);
     packet->th_flags = flags;
@@ -171,7 +166,7 @@ bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize
         memcpy((char*)packet + sizeof(STCPHeader), data, length);
 
     // send the packet    
-    if((ssize_t bytes = stcp_network_send(sd, packet, sizeof(STCPHeader), NULL)) > 0) {
+    if(stcp_network_send(sd, packet, sizeof(STCPHeader), NULL) > 0) {
         // free the memory
         free(packet);
         return true;
@@ -186,14 +181,14 @@ bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize
 }
 
 // funtion to wait for a packet
-bool get_packet(myscket_t sd, context_t *ctx, uint8_t flags) {
+bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
     // create the buffer to receive header
     char buffer[sizeof(STCPHeader)];
 
     // wait for an event in our socket
     stcp_wait_for_event(sd, NETWORK_DATA, NULL);
     // then recv the bytes
-    if((ssize_t bytes_recvd = stcp_network_recv(sd, buffer, MSS)) < sizeof(STCPHeader)) {
+    if(stcp_network_recv(sd, buffer, MSS) < sizeof(STCPHeader)) {
         // we did not recieve all the bytes that we should have gotten
         errno = ECONNREFUSED;
         // free memory we dont need anymore
@@ -230,11 +225,11 @@ bool send_fin(mysocket_t sd, context_t* ctx){
 	fin_packet->th_off = htons(5);
 	ctx->seq_num++;
 	
-	ssize_t sentBytes = stcp_network_send(sd, FIN_packet, sizeof(STCPHeader), NULL);
+	ssize_t sentBytes = stcp_network_send(sd, fin_packet, sizeof(STCPHeader), NULL);
 	
 	if(sentBytes > 0){
 		ctx->connection_state = SENT_FIN;
-		get_ack(sd, ctx);
+		get_packet(sd, ctx, TH_ACK);
 		
 		free(fin_packet);
 		return true;
@@ -286,7 +281,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
 		}
 		
         // we need to wait for an event to know what to do
-        unsigned int event = stcp_wait_for_event(sc, ANY_EVENT, NULL);
+        unsigned int event = stcp_wait_for_event(sd, ANY_EVENT, NULL);
 		
         // if we get data from the application, send it over network
 		if(event == APP_DATA){
@@ -309,9 +304,9 @@ static void control_loop(mysocket_t sd, context_t *ctx)
     }
 }
 
-bool app_data_event(mysocket_t sd, context_t ctx){
+bool app_data_event(mysocket_t sd, context_t *ctx){
 	// figure out length
-    ssize_t length = min(ctx->rec_wind_size, MSS);
+    ssize_t length = MIN(ctx->rec_wind_size, MSS);
     length -= sizeof(STCPHeader);  // also need to account for header length
 
     // then read that length from the application
@@ -352,7 +347,7 @@ void network_data_event(mysocket_t sd, context_t* ctx) {
 
     if (isFIN) {
         gettimeofday(&tv, NULL);
-        send_ACK(sd, ctx);
+        send_packet(sd, ctx, TH_ACK, NULL, 0);
         stcp_fin_received(sd);
         ctx->connection_state = CLOSED;
         return;
@@ -361,11 +356,11 @@ void network_data_event(mysocket_t sd, context_t* ctx) {
     bool remainder = bool(network_bytes - sizeof(STCPHeader));
     if (remainder) {
         stcp_app_send(sd, buffer + sizeof(STCPHeader), network_bytes - sizeof(STCPHeader));
-        send_ACK(sd, ctx);
+        send_packet(sd, ctx, TH_ACK, NULL, 0);
     }
 }
 
-void app_close_event(mysocket_t, sd, context_t* ctx){
+void app_close_event(mysocket_t sd, context_t* ctx){
 	if(ctx->connection_state == CSTATE_ESTABLISHED)
 		send_fin(sd, ctx);
 	//prinf("connection_state: %d\n", ctx->connection_state);
