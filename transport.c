@@ -55,13 +55,13 @@ typedef struct context_t
     /* any other connection-wide global variables go here */
 } ctx;
 
-typedef struct segment_t{
+struct segment_t{
 	unsigned int seqNumber;
 	ssize_t length;
 	bool acked;
 	bool fin;
 	char* data;
-};
+} ;
 
 struct senderBuffer {
   char buffer[WINDOW_SIZE];
