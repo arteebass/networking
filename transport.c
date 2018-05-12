@@ -214,6 +214,8 @@ bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
         ctx->rec_wind_size = 1; // for flow control - if 0 try sending 1 byte
 
     ctx->rec_seq_num = ntohl(packet->th_seq);
+
+    return true;
 }
 
 bool send_fin(mysocket_t sd, context_t* ctx){
