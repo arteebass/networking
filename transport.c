@@ -29,12 +29,12 @@ static const unsigned int MSS = 536;
 enum { 
     CSTATE_ESTABLISHED,
     SENT_SYN,
+	SENT_SYN_ACK,
+	SENT_ACK,   
+	SENT_FIN,
+	RECV_SYN,
     RECV_SYN_ACK,
-    RECV_SYN,
     RECV_ACK,
-    SENT_ACK,
-    SENT_SYN_ACK,
-    SENT_FIN,
     CLOSED
 };   
 
