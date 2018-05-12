@@ -24,17 +24,18 @@
 // globals
 static const unsigned int WINDOW_SIZE = 3072;
 static const unsigned int MSS = 536;
+struct timeval tv;
 
 // states
 enum { 
     CSTATE_ESTABLISHED,
     SENT_SYN,
-	SENT_SYN_ACK,
-	SENT_ACK,   
-	SENT_FIN,
-	RECV_SYN,
     RECV_SYN_ACK,
+    RECV_SYN,
     RECV_ACK,
+    SENT_ACK,
+    SENT_SYN_ACK,
+    SENT_FIN,
     CLOSED
 };   
 
@@ -56,13 +57,13 @@ static void control_loop(mysocket_t sd, context_t *ctx);
 // funtions used
 bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags);
 bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags);
-
 bool send_syn(mysocket_t sd, context_t *ctx);
-bool get_syn_ack(myscket_t sd, context_t *ctx);
+bool get_syn_ack(mysocket_t sd, context_t *ctx);
 bool send_ack(mysocket_t sd, context_t *ctx);
-bool get_syn(myscket_t sd, context_t *ctx);
+bool get_syn(mysocket_t sd, context_t *ctx);
 bool send_syn_ack(mysocket_t sd, context_t *ctx);
-bool get_ack(myscket_t sd, context_t *ctx);
+bool get_ack(mysocket_t sd, context_t *ctx);
+bool app_data_event(mysocket_t sd, context_t ctx);
 
 
 /* initialise the transport layer, and start the main loop, handling
@@ -215,10 +216,35 @@ static void control_loop(mysocket_t sd, context_t *ctx)
 {
     assert(ctx);
     assert(!ctx->done);
+	int count = 0;
 
     while (!ctx->done)
     {
-        unsigned int event;
+		if(ctx->connection_state == CLOSED){
+			ctx->done = true;
+			continue;
+		}
+		
+        unsigned int event = stcp_wait_for_event(sc, ANY_EVENT, NULL);
+		
+		if(event == APP_DATA){
+			gettimeofday(&tv, NULL);
+			app_data_event(sd, ctx);
+		}
+		
+		if(event == NETWORK_DATA){
+			gettimeofday(&tv, NULL);
+			network_data_event(sd, ctx);
+		}
+		
+		if(event == APP_CLOSE_REQUESTED){
+			gettimeofday(&tv, NULL);
+			app_close_event(sd, ctx);
+		}
+		
+		if(event == ANY_EVENT){
+			gettimeofday(&tv, NULL);
+		}
 
         /* see stcp_api.h or stcp_api.c for details of this function */
         /* XXX: you will need to change some of these arguments! */
@@ -233,6 +259,10 @@ static void control_loop(mysocket_t sd, context_t *ctx)
 
         /* etc. */
     }
+}
+
+bool app_data_event(mysocket_t sd, context_t ctx){
+	
 }
 
 
