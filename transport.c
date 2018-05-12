@@ -39,23 +39,50 @@ enum {
     CLOSED
 };   
 
-
 /* this structure is global to a mysocket descriptor */
-typedef struct
+typedef struct context_t
 {
     bool_t done;    /* TRUE once connection is closed */
-
     int connection_state;   /* state of the connection (established, etc.) */
     tcp_seq initial_sequence_num;
+	unsigned int seq_num;
+	unsigned int rec_seq_num;
+	unsigned int rec_wind_size;
+	
+	struct recieverBuffer* rb;
+	struct senderBuffer* sb;
 
     /* any other connection-wide global variables go here */
-} context_t;
+} ctx;
+
+typedef struct segment_t{
+	unsigned int seqNumber;
+	ssize_t length;
+	bool acked;
+	bool fin;
+	char* data;
+};
+
+struct senderBuffer {
+  char buffer[WINDOW_SIZE];
+  char* endOfSegment;
+  char* endOfAckdSegment;
+  unsigned int nextSeq;
+  segment_t* segments;
+};
+
+struct recieverBuffer {
+  char buffer[WINDOW_SIZE];
+  char* endOfSegment;
+  unsigned int nextSeq;
+  segment_t* segments;
+};
 
 
 static void generate_initial_seq_num(context_t *ctx);
 static void control_loop(mysocket_t sd, context_t *ctx);
-// funtions used
-bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags);
+// added funtions used
+bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize_t length);
 bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags);
 bool send_syn(mysocket_t sd, context_t *ctx);
 bool get_syn_ack(mysocket_t sd, context_t *ctx);
@@ -63,6 +90,9 @@ bool send_ack(mysocket_t sd, context_t *ctx);
 bool get_syn(mysocket_t sd, context_t *ctx);
 bool send_syn_ack(mysocket_t sd, context_t *ctx);
 bool get_ack(mysocket_t sd, context_t *ctx);
+bool send_fin(mysocket_t sd, context_t* ctx);
+void app_close_event(mysocket_t, sd, context_t* ctx);
+void network_data_event(mysocket_t sd, context_t* ctx);
 bool app_data_event(mysocket_t sd, context_t ctx);
 
 
@@ -89,7 +119,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
 
     if(is_active) {
         // send SYN packet
-        if(!send_packet(sd, ctx, TH_SYN))
+        if(!send_packet(sd, ctx, TH_SYN, NULL, 0))
             return; // unable to send so exit out
         ctx->connection_state = SENT_SYN;
 
@@ -99,7 +129,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
         ctx->connection_state = RECV_SYN_ACK;
 
         // finally ack the syn ack
-        if(!send_packet(sd, ctx, TH_ACK))
+        if(!send_packet(sd, ctx, TH_ACK, NULL, 0))
             return;
         ctx->connection_state = SENT_ACK;
 
@@ -109,7 +139,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
             return;
         ctx->connection_state = RECV_SYN;
 
-        if(!send_packet(sd, ctx, (TH_SYN | TH_ACK)))
+        if(!send_packet(sd, ctx, (TH_SYN | TH_ACK), NULL, 0))
             return;
         ctx->connection_state = SENT_SYN_ACK;
 
@@ -128,14 +158,17 @@ void transport_init(mysocket_t sd, bool_t is_active)
 }
 
 // send a packet
-bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
+bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize_t length) {
     // create the packet
-    STCPHeader* packet = (STPCHeader*) malloc(sizeof(STCPHeader));
+    STCPHeader* packet = (STPCHeader*) malloc(sizeof(STCPHeader) + length);
     packet->th_seq = htonl(ctx->seq_num++);
     packet->th_ack = htonl(ctx->rec_seq_num+1);
     packet->th_flags = flags;
     packet->th_win = htons(WINDOW_SIZE);
     packet->th_off = htonl(5); // not using optional field
+
+    if(length > 0)
+        memcpy((char*)packet + sizeof(STCPHeader), data, length);
 
     // send the packet    
     if((ssize_t bytes = stcp_network_send(sd, packet, sizeof(STCPHeader), NULL)) > 0) {
@@ -188,6 +221,31 @@ bool get_packet(myscket_t sd, context_t *ctx, uint8_t flags) {
     ctx->rec_seq_num = ntohl(packet->th_seq);
 }
 
+bool send_fin(mysocket_t sd, context_t* ctx){
+	STCPHeader* fin_packet = (STCPHeader*)malloc(sizeof(STCPHeader));
+	fin_packet->th_seq = htonl(ctx->seq_num);
+	fin_packet->th_ack = htonl(ctx->rec_seq_num + 1);
+	fin_packet->th_flags = TH_FIN;
+	fin_packet->th_win = htons(WINDOW_SIZE);
+	fin_packet->th_off = htons(5);
+	ctx->seq_num++;
+	
+	ssize_t sentBytes = stcp_network_send(sd, FIN_packet, sizeof(STCPHeader), NULL);
+	
+	if(sentBytes > 0){
+		ctx->connection_state = SENT_FIN;
+		get_ack(sd, ctx);
+		
+		free(fin_packet);
+		return true;
+	} else {
+		free(fin_packet);
+		free(ctx);
+		errno = ECONNREFUSED;
+		return false;
+	}
+}
+
 /* generate random initial sequence number for an STCP connection */
 static void generate_initial_seq_num(context_t *ctx)
 {
@@ -218,53 +276,100 @@ static void control_loop(mysocket_t sd, context_t *ctx)
     assert(!ctx->done);
 	int count = 0;
 
-    while (!ctx->done)
+    // loop to run until connetion is closed
+    while (true)
     {
+        // if connetion is closed, break out of loop
 		if(ctx->connection_state == CLOSED){
 			ctx->done = true;
-			continue;
+			break;
 		}
 		
+        // we need to wait for an event to know what to do
         unsigned int event = stcp_wait_for_event(sc, ANY_EVENT, NULL);
 		
+        // if we get data from the application, send it over network
 		if(event == APP_DATA){
 			gettimeofday(&tv, NULL);
-			app_data_event(sd, ctx);
+			if(!app_data_event(sd, ctx))
+                return;
 		}
 		
-		if(event == NETWORK_DATA){
+        // if we get data from network, send it to application
+		if(event == NETWORK_DATA) {
 			gettimeofday(&tv, NULL);
 			network_data_event(sd, ctx);
 		}
 		
+        // if we need to close the connection
 		if(event == APP_CLOSE_REQUESTED){
 			gettimeofday(&tv, NULL);
 			app_close_event(sd, ctx);
-		}
-		
-		if(event == ANY_EVENT){
-			gettimeofday(&tv, NULL);
-		}
-
-        /* see stcp_api.h or stcp_api.c for details of this function */
-        /* XXX: you will need to change some of these arguments! */
-        event = stcp_wait_for_event(sd, 0, NULL);
-
-        /* check whether it was the network, app, or a close request */
-        if (event & APP_DATA)
-        {
-            /* the application has requested that data be sent */
-            /* see stcp_app_recv() */
-        }
-
-        /* etc. */
+		}		
     }
 }
 
 bool app_data_event(mysocket_t sd, context_t ctx){
-	
+	// figure out length
+    ssize_t length = min(ctx->rec_wind_size, MSS);
+    length -= sizeof(STCPHeader);  // also need to account for header length
+
+    // then read that length from the application
+    char buffer[length];
+    if(stcp_app_recv(sd, buffer, length) == 0) {
+        // could not send if here
+        errno = ECONNREFUSED;
+        // free unneeded memory
+        free(ctx);
+        return false;
+    }
+
+    // send packet
+    if(!send_packet(sd, ctx, NETWORK_DATA, buffer, length))
+        return false;
+    
+    // get ack
+    if(!get_packet(sd, ctx, TH_ACK))
+        return false;
 }
 
+void network_data_event(mysocket_t sd, context_t* ctx) {
+    bool isFIN = false;
+    char buffer[MSS]; //payload
+    
+    ssize_t network_bytes = stcp_network_recv(sd, buffer, MSS);
+    if (network_bytes < sizeof(STCPHeader)) {
+        free(ctx);
+        // stcp_unblock_application(sd);
+        errno = ECONNREFUSED;  // TODO
+        return;
+    }
+    
+    STCPHeader* bufferHeader = (STCPHeader*)buffer;
+    ctx->rec_seq_num = ntohl(bufferHeader->th_seq);
+    ctx->rec_wind_size = ntohs(bufferHeader->th_win);
+    isFIN = bufferHeader->th_flags == TH_FIN; //Boolean condition
+
+    if (isFIN) {
+        gettimeofday(&tv, NULL);
+        send_ACK(sd, ctx);
+        stcp_fin_received(sd);
+        ctx->connection_state = CLOSED;
+        return;
+    }
+    
+    bool remainder = bool(network_bytes - sizeof(STCPHeader));
+    if (remainder) {
+        stcp_app_send(sd, buffer + sizeof(STCPHeader), network_bytes - sizeof(STCPHeader));
+        send_ACK(sd, ctx);
+    }
+}
+
+void app_close_event(mysocket_t, sd, context_t* ctx){
+	if(ctx->connection_state == CSTATE_ESTABLISHED)
+		send_fin(sd, ctx);
+	//prinf("connection_state: %d\n", ctx->connection_state);
+}
 
 /**********************************************************************/
 /* our_dprintf
@@ -279,6 +384,7 @@ bool app_data_event(mysocket_t sd, context_t ctx){
  * Calls to this function are generated by the dprintf amd
  * dperror macros in transport.h
  */
+ 
 void our_dprintf(const char *format,...)
 {
     va_list argptr;
@@ -291,6 +397,3 @@ void our_dprintf(const char *format,...)
     fputs(buffer, stdout);
     fflush(stdout);
 }
-
-
-
