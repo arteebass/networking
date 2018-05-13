@@ -97,12 +97,15 @@ bool app_data_event(mysocket_t sd, context_t *ctx);
  */
 void transport_init(mysocket_t sd, bool_t is_active)
 {
+    printf("start\n");
     context_t *ctx;
 
     ctx = (context_t *) calloc(1, sizeof(context_t));
     assert(ctx);
 
+    printf("tryseqnum\n");
     generate_initial_seq_num(ctx);
+    printf("genseqnum\n");
 
     /* XXX: you should send a SYN packet here if is_active, or wait for one
      * to arrive if !is_active.  after the handshake completes, unblock the
@@ -114,15 +117,18 @@ void transport_init(mysocket_t sd, bool_t is_active)
 
     if(is_active) {
         // send SYN packet
+         printf("sendsyn\n");
         if(!send_packet(sd, ctx, TH_SYN, NULL, 0))
             return; // unable to send so exit out
         ctx->connection_state = SENT_SYN;
 
+        printf("getsynack\n");
         // then we need to wait for the ack
         if(!get_packet(sd, ctx, (TH_SYN | TH_ACK)))
             return; // did not get syn ack        
         ctx->connection_state = RECV_SYN_ACK;
 
+        printf("sendack\n");
         // finally ack the syn ack
         if(!send_packet(sd, ctx, TH_ACK, NULL, 0))
             return;
@@ -130,14 +136,17 @@ void transport_init(mysocket_t sd, bool_t is_active)
 
     } else {
         // wait for SYN packet
+        printf("getsyn\n");
         if(!get_packet(sd, ctx, TH_SYN))
             return;
         ctx->connection_state = RECV_SYN;
 
+        printf("sendsynack\n");
         if(!send_packet(sd, ctx, (TH_SYN | TH_ACK), NULL, 0))
             return;
         ctx->connection_state = SENT_SYN_ACK;
 
+        printf("getack\n");
         if(!get_packet(sd, ctx, TH_ACK))
             return;
         ctx->connection_state = RECV_ACK;
@@ -146,6 +155,8 @@ void transport_init(mysocket_t sd, bool_t is_active)
     ctx->connection_state = CSTATE_ESTABLISHED;
     stcp_unblock_application(sd);
 
+    // got to control loop
+    printf("ctrl loop\n");
     control_loop(sd, ctx);
 
     /* do any cleanup here */
@@ -162,11 +173,11 @@ bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize
     packet->th_win = htons(WINDOW_SIZE);
     packet->th_off = htonl(5); // not using optional field
 
-    if(length > 0)
+    if(length > 0) 
         memcpy((char*)packet + sizeof(STCPHeader), data, length);
 
     // send the packet    
-    if(stcp_network_send(sd, packet, sizeof(STCPHeader), NULL) > 0) {
+    if(stcp_network_send(sd, packet, sizeof(STCPHeader)+length, NULL) > 0) {
         // free the memory
         free(packet);
         return true;
@@ -176,6 +187,7 @@ bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize
         // free memory
         free(packet);
         free(ctx);
+        stcp_unblock_application(sd);
         return false;
     }    
 }
@@ -190,9 +202,10 @@ bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
     // then recv the bytes
     if(stcp_network_recv(sd, buffer, MSS) < sizeof(STCPHeader)) {
         // we did not recieve all the bytes that we should have gotten
-        errno = ECONNREFUSED;
+        errno = ECONNREFUSED;        
         // free memory we dont need anymore
         free(ctx);
+        //stcp_unblock_application(sd);
         return false;
     }
 
@@ -200,13 +213,14 @@ bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
     STCPHeader *packet = (STCPHeader*)buffer;
 
     // make sure it is a syn-ack packet
-    if(packet->th_flags != flags) {
-        // we did not recieve the right flags
-        errno = ECONNREFUSED;
-        // free memory we dont need anymore
-        free(ctx);
-        return false;
-    }
+  //  if(packet->th_flags != flags) {
+  //      // we did not recieve the right flags
+  //      errno = ECONNREFUSED;
+  //      // free memory we dont need anymore
+  //      free(ctx);
+  //      //stcp_unblock_application(sd);
+  //      return false;
+  //  }
 
     // get the rec window size and seq num from receiver
     ctx->rec_wind_size = ntohs(packet->th_win);
@@ -214,6 +228,10 @@ bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
         ctx->rec_wind_size = 1; // for flow control - if 0 try sending 1 byte
 
     ctx->rec_seq_num = ntohl(packet->th_seq);
+
+    if (ctx->connection_state == SENT_FIN) {
+      ctx->connection_state = CLOSED;
+    }
 
     return true;
 }
@@ -230,6 +248,7 @@ bool send_fin(mysocket_t sd, context_t* ctx){
 	ssize_t sentBytes = stcp_network_send(sd, fin_packet, sizeof(STCPHeader), NULL);
 	
 	if(sentBytes > 0){
+        printf("sent fin\n");    
 		ctx->connection_state = SENT_FIN;
 		get_packet(sd, ctx, TH_ACK);
 		
@@ -273,6 +292,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
     assert(!ctx->done);
 	int count = 0;
 
+    printf("startloop\n");
     // loop to run until connetion is closed
     while (true)
     {
@@ -285,8 +305,10 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         // we need to wait for an event to know what to do
         unsigned int event = stcp_wait_for_event(sd, ANY_EVENT, NULL);
 		
+        
         // if we get data from the application, send it over network
 		if(event == APP_DATA){
+            printf("appdata\n");
 			gettimeofday(&tv, NULL);
 			if(!app_data_event(sd, ctx))
                 return;
@@ -294,12 +316,14 @@ static void control_loop(mysocket_t sd, context_t *ctx)
 		
         // if we get data from network, send it to application
 		if(event == NETWORK_DATA) {
+            printf("networkdata\n");
 			gettimeofday(&tv, NULL);
 			network_data_event(sd, ctx);
 		}
 		
         // if we need to close the connection
 		if(event == APP_CLOSE_REQUESTED){
+            printf("close\n");
 			gettimeofday(&tv, NULL);
 			app_close_event(sd, ctx);
 		}		
@@ -321,13 +345,22 @@ bool app_data_event(mysocket_t sd, context_t *ctx){
         return false;
     }
 
+    printf("got app data\n");
+    printf("\n");
+
     // send packet
     if(!send_packet(sd, ctx, NETWORK_DATA, buffer, length))
         return false;
+
+    printf("sent app data\n");
     
     // get ack
     if(!get_packet(sd, ctx, TH_ACK))
         return false;
+
+    printf("got ack\n");
+
+    return true;
 }
 
 void network_data_event(mysocket_t sd, context_t* ctx) {
@@ -337,15 +370,17 @@ void network_data_event(mysocket_t sd, context_t* ctx) {
     ssize_t network_bytes = stcp_network_recv(sd, buffer, MSS);
     if (network_bytes < sizeof(STCPHeader)) {
         free(ctx);
-        // stcp_unblock_application(sd);
+        //stcp_unblock_application(sd);
         errno = ECONNREFUSED;  // TODO
         return;
     }
-    
+
     STCPHeader* bufferHeader = (STCPHeader*)buffer;
     ctx->rec_seq_num = ntohl(bufferHeader->th_seq);
     ctx->rec_wind_size = ntohs(bufferHeader->th_win);
     isFIN = bufferHeader->th_flags == TH_FIN; //Boolean condition
+
+    printf("read data\n");
 
     if (isFIN) {
         gettimeofday(&tv, NULL);
@@ -354,10 +389,14 @@ void network_data_event(mysocket_t sd, context_t* ctx) {
         ctx->connection_state = CLOSED;
         return;
     }
+
+    printf("not is fin\n");
     
-    bool remainder = bool(network_bytes - sizeof(STCPHeader));
-    if (remainder) {
+    if (network_bytes - sizeof(STCPHeader) > 0) {
+        printf("remainder\n");    
         stcp_app_send(sd, buffer + sizeof(STCPHeader), network_bytes - sizeof(STCPHeader));
+        send_packet(sd, ctx, TH_ACK, NULL, 0);
+    } else {
         send_packet(sd, ctx, TH_ACK, NULL, 0);
     }
 }

@@ -12,3 +12,4 @@ mysock.o
 connection_demux.o
 client.o
 client
+rcvd
