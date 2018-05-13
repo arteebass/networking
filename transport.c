@@ -24,7 +24,6 @@
 // globals
 static const unsigned int WINDOW_SIZE = 3072;
 static const unsigned int MSS = 536;
-struct timeval tv;
 
 // states
 enum { 
@@ -198,7 +197,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
 {
     assert(ctx);
     assert(!ctx->done);
-    
+
     // loop to run until connetion is closed
     while (true)
     {
@@ -213,21 +212,18 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         
         // if we get data from the application, send it over network
 		if(event == APP_DATA){
-			gettimeofday(&tv, NULL);
 			if(!app_data_event(sd, ctx))
                 return;
 		}
 		
         // if we get data from network, send it to application
 		else if(event == NETWORK_DATA) {
-			gettimeofday(&tv, NULL);
 			if(!network_data_event(sd, ctx))
                 return;
 		}
 		
         // if we need to close the connection
 		else if(event == APP_CLOSE_REQUESTED){
-			gettimeofday(&tv, NULL);
 			if(!app_close_event(sd, ctx))
                 return;
 		}		
@@ -281,7 +277,6 @@ bool network_data_event(mysocket_t sd, context_t* ctx) {
 
     // if it has fin flag then connection will close
     if (bufferHeader->th_flags == TH_FIN) {
-        gettimeofday(&tv, NULL);
         send_packet(sd, ctx, TH_ACK, NULL, 0);
         stcp_fin_received(sd);
         ctx->connection_state = CLOSED;
