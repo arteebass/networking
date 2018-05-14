@@ -2,6 +2,10 @@
  README file for Project 3 - Simple TCP
            Name(s): Rueben Tiow, Hunter Garrett, Jacob Johnson
 ================================================
+PROJECT CONTRIBUTIONS:
+Rueben: Design, Coding, Debugging, Testing
+Hunter: Design, Coding, Debugging, Testing
+Jacob: Design, Coding, Debugging, Testing
 
 USAGE:
 1. Run server with ./server
@@ -19,10 +23,8 @@ IMPLEMENTATION DESIGN DECISION:
   - sequence number
   - received sequence number
   - receiver window size
-  - receiver buffer
-  - sender buffer
 3. Three-way handshaking mimics that of traditional TCP
-4. After a connection is established, on three events are handled:
+4. After a connection is established, there are three events handled:
   - Application data
   - Network data
   - Application close request
@@ -31,8 +33,8 @@ IMPLEMENTED:
 1. Sliding Window(s)
   - Fixed size: 3072 bytes
   - A receive window
-  - A sender window = min(receive window, congestion window)
-2. TCP segment send/receive
+  - A sender window
+2. TCP segment Send/Receive
 3. Connection Setup/Teardown
 
 LIMITATIONS:

@@ -198,7 +198,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
     assert(ctx);
     assert(!ctx->done);
 
-    // loop to run until connetion is closed
+    // loop to run until connection is closed
     while (true)
     {
         // if connetion is closed, break out of loop
