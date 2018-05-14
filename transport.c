@@ -115,7 +115,7 @@ bool send_packet(mysocket_t sd, context_t *ctx, uint8_t flags, char* data, ssize
         memcpy((char*)packet + sizeof(STCPHeader), data, length);
 
     // send the packet    
-    if(stcp_network_send(sd, packet, sizeof(STCPHeader)+length, NULL) == sizeof(STCPHeader)+length) {
+    if(stcp_network_send(sd, packet, sizeof(STCPHeader)+length, NULL) == (signed)sizeof(STCPHeader)+length) {
         // free the memory
         free(packet);
         return true;
@@ -138,7 +138,7 @@ bool get_packet(mysocket_t sd, context_t *ctx, uint8_t flags) {
     // wait for an event in our socket
     stcp_wait_for_event(sd, NETWORK_DATA, NULL);
     // then recv the bytes
-    if(stcp_network_recv(sd, buffer, MSS) < sizeof(STCPHeader)) {
+    if(stcp_network_recv(sd, buffer, MSS) < (signed)sizeof(STCPHeader)) {
         // we did not recieve all the bytes that we should have gotten
         errno = ECONNREFUSED;        
         // free memory we dont need anymore
@@ -264,7 +264,7 @@ bool network_data_event(mysocket_t sd, context_t* ctx) {
     
     // read data from network
     ssize_t bytes = stcp_network_recv(sd, buffer, MSS);
-    if (bytes < sizeof(STCPHeader)) {
+    if (bytes < (signed)sizeof(STCPHeader)) {
         free(ctx);
         errno = ECONNREFUSED;
         return false;
